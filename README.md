@@ -1,17 +1,28 @@
 # kafka-consumer-lib
 
-Multi-threaded Kafka consumer library with parallel partition processing, batch handling, and built-in metrics.
+A high-performance, multi-threaded Kafka consumer library.
+
+**Key Benefits:**
+- **At Least Once Processing**: Manual commits guarantee data delivery
+- **High Throughput**: Decoupled polling and processing for maximum performance
+- **Resource Optimization**: Reduces strain on Kafka brokers
+- **Vertical Scaling**: Overcomes horizontal scaling limits
+- **Flexible Processing**: Handles varied processing times without complex parameter tuning
+- **Backpressure Control**: Prevents memory overflow with blocking queue
+- **Cost Effective**: Can run on cheaper hardware like AWS spot instances
 
 ## Features
 
-- **Parallel Processing**: Processes partitions concurrently with configurable parallelism
-- **Pause/Resume**: Automatically pauses partitions during processing, resumes when complete
-- **Batch Handling**: Groups records by partition for efficient batch processing
-- **Backpressure**: Blocking queue prevents system overload
-- **Offset Management**: Per-partition offset tracking and incremental commits
-- **Rebalancing**: Handles partition rebalancing with graceful task completion
+- **Decoupled Polling and Processing**: Separates message fetching from processing for maximum efficiency
+- **Manual Commits**: Ensures at-least-once processing semantics and prevents data loss
+- **In-Order Processing**: Guarantees message order within partitions through pause/resume mechanism
+- **Parallel Partition Processing**: Processes multiple partitions concurrently with configurable parallelism
+- **Backpressure Control**: Fixed-size blocking queue prevents memory overflow and system overload
+- **Graceful Rebalancing**: Implements `ConsumerRebalanceListener` for handling partition events
+- **Flexible Workload Handling**: Accommodates varying processing times without `max.poll.interval.ms` tuning
 - **Error Recovery**: Reset to specific offset on failure via `BatchMessageHandlerException`
-- **Metrics**: Built-in Datadog StatsD integration
+- **Metrics Integration**: Built-in Datadog StatsD integration for monitoring
+- **Simple Interfaces**: Easy-to-use interfaces that abstract away complexity
 
 ## Maven Dependency
 
@@ -157,16 +168,82 @@ consumer.consume();  // Starts the consumer loop
 
 ## How It Works
 
-The library automatically manages partition pause/resume:
+The library implements a multi-threaded architecture that decouples polling from processing:
 
-1. **Pause**: When records are fetched for a partition, the partition is paused to prevent fetching new records
-2. **Process**: Records are submitted to executor for parallel processing
-3. **Resume**: Partition is resumed once processing completes, allowing new records to be fetched
+### Architecture Diagram
 
-This ensures:
-- No duplicate processing of records
-- Controlled memory usage
-- Proper offset management per partition
+```
+                           +---------------------+
+                           |                     |
+                           |     Kafka Broker    |
+                           |                     |
+                           |       (Kafka)       |
+                           +----------+----------+
+                                      |
+                                      v
+                       +-------------------------------+
+                       |        Consumer Thread        |
+                       |                               |
+                       |    +--------+                 |
+                       |    |  Poll  |                 |
+                       |    +---+----+                 |
+                       |        |                      |
+                       |        v                      |
+                       |  +-----------+                |
+                       |  | Submit    |                |
+                       |  | Tasks to  |----------------+----+
+                       |  | ForkJoin  |                |    |
+                       |  | Pool      |                |    |
+                       |  +-----+-----+                |    |
+                       |        |                      |    |
+                       |        v                      |    |
+                       |    +--------+                 |    |
+                       |    | Commit |                 |    |
+                       |    +--------+                 |    |
+                       +-------------------------------+    |
+                                                            |
+                                                            v
+                 +----------------------------------------------------+
+                 |                   ForkJoin Pool                    |
+                 |                                                    |
+                 |   +----------------+   +----------------+          |
+                 |   |   Worker 1     |   |   Worker 2     |   ...    |
+                 |   | ProcessRecords |   | ProcessRecords |          |
+                 |   +----------------+   +----------------+          |
+                 |                                                    |
+                 |   +----------------+                               |
+                 |   |   Worker 3     |                               |
+                 |   | ProcessRecords |                               |
+                 |   +----------------+                               |
+                 +----------------------------------------------------+
+```
+
+### Architecture Flow
+
+1. **Poll**: Poll Kafka for records (default: 10ms duration)
+2. **Group**: Group records by partition
+3. **Create Tasks**: Create a processing task for each partition
+4. **Submit**: Submit tasks to the Fork/Join Pool (BlockingQueueExecutor) for parallel execution
+5. **Pause**: Pause partitions to prevent fetching new records while processing
+6. **Process**: Execute business logic in parallel threads
+7. **Commit**: Commit offsets for successfully processed partitions (every 5 seconds)
+8. **Resume**: Resume partitions of completed tasks
+9. **Repeat**: Return to polling step
+
+### Key Design Decisions
+
+- **Partition Pausing**: Ensures in-order processing within each partition
+- **Manual Commits**: Prevents data loss and provides at-least-once guarantees
+- **Blocking Queue**: Implements backpressure to prevent OOM issues
+- **Per-Partition Tracking**: Maintains offset state per partition for accurate commits
+- **Rebalance Handling**: Gracefully handles partition revocation and assignment events
+
+This architecture ensures:
+- ✅ No duplicate processing of records
+- ✅ Controlled memory usage (no OOM)
+- ✅ Proper offset management per partition
+- ✅ In-order processing within partitions
+- ✅ High throughput with parallel processing
 
 ## Configuration
 
@@ -214,6 +291,39 @@ Note: Metrics manager is created automatically but metric methods are not called
 consumer.close();  // Stops consumer, wakes up poll loop, closes metrics manager
 // The consume() method's finally block handles task completion and offset commits
 ```
+
+## Architecture Details
+
+### Consumer Loop
+
+The main `consume()` method implements the following loop:
+
+```java
+while (!stopped.get()) {
+    ConsumerRecords<K, V> records = consumer.poll(Duration.ofMillis(10));  // 1. Poll
+    handleFetchedRecords(records);  // 2. Group, create tasks, submit, pause
+    checkActiveTasks();  // 3. Check completion, handle failures, resume
+    commitOffsets();  // 4. Commit offsets periodically
+}
+```
+
+### Rebalancing
+
+The library implements `ConsumerRebalanceListener` to handle:
+- **Partition Revocation**: Stops active tasks, waits for completion, commits offsets
+- **Partition Assignment**: Resumes partitions for new assignments
+- **Partition Loss**: Cleans up lost partitions
+
+### Error Handling
+
+When a `RejectedExecutionException` occurs (queue full):
+- The partition handler seeks back to the first offset of the batch
+- Prevents memory overflow by rejecting excessive messages
+- Logs a warning to increase parallelism if needed
+
+## Repository
+
+Open source repository: https://github.com/dream11/kafka-consumer-library
 
 ## License
 
