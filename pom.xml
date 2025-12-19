@@ -3,7 +3,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>com.dream11</groupId>
     <artifactId>kafka-consumer-lib</artifactId>
-    <version>1.0.2-SNAPSHOT</version>
+    <version>1.0.0</version>
     <name>Kafka consumer library</name>
     <description>Low level kafka consumer library</description>
     <url>https://github.com/dream-horizon-org/kafka-consumer-library.git</url>
