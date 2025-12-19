@@ -30,7 +30,7 @@ A high-performance, multi-threaded Kafka consumer library.
 <dependency>
     <groupId>com.dream11</groupId>
     <artifactId>kafka-consumer-lib</artifactId>
-    <version>1.0.0</version>
+    <version>1.0.2</version>
 </dependency>
 ```
 
